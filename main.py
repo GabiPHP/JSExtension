@@ -5,6 +5,7 @@ from tkinter import messagebox
 from functools import partial
 import json
 import os
+import re
 import socket
 import subprocess
 import win32gui, win32con
@@ -20,6 +21,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 port = 9242
 new_process = r"C:\Program Files\Google\Chrome\Application\chrome.exe --remote-debugging-port=%s"%(port)
 
+print("Logs:")
 
 #Check If Chrome Is Running And Port Is Used
 def running(process_name):
@@ -37,7 +39,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 
 
 program = win32gui.GetForegroundWindow()
-# win32gui.ShowWindow(program, win32con.SW_HIDE)
+win32gui.ShowWindow(program, win32con.SW_HIDE)
 
 
 #VARIABLES
@@ -56,9 +58,6 @@ if(os.path.exists(saveFilePath)):
         if(scripts=={}):print("No Extensions Installed!")
 else:open(saveFilePath,"w").write("[]")            
 
-print(scripts)
-
-
 #INITILIZE TKINTER
 root = Tk()
 root.title("JSEXTENSION")
@@ -66,23 +65,21 @@ root.geometry(f"300x{50+(25*(len(scripts)+1))}")
 frm = ttk.Frame(root, padding=10)
 frm.grid()
 
-
-
 #FUNCTIONS
+    
 
 def findTabs(pageURL):
     global tabsIDHistory
     tabsId = []
     for i in range(len(data)):
         tabData = data[i]
-        if(tabData["url"].__contains__(pageURL)):
-            tabsId.append(tabData["id"])
+        if(tabData["url"].__contains__(pageURL)):tabsId.append(tabData["id"])
     return tabsId
 
 async def inject(id,code,repeating):
    try:
     async with websockets.connect(f"ws://localhost:{port}/devtools/page/{id}") as websocket:
-            message = {"id":1,"method":"Runtime.evaluate","params":{"expression":code}}
+            message = {"id":1,"method":"Runtime.evaluate","params":{"expression":code.replace('~','"')}}
             await websocket.send(json.dumps(message))
             if(repeating==0):tabsIDHistory.append(id)
    except Exception as e:print("Tab Closed:",e)
@@ -94,6 +91,14 @@ def refresh():
 def syncText(text_widget, text_var):
     text_var.set(text_widget.get("1.0", END))
     text_widget.after(100, syncText, text_widget, text_var)
+
+def convertJS(js):
+    xStr=""
+    match=re.search(r"`(.*?)`",js,re.DOTALL)
+    if match:xStr=match.group(1);js=re.sub(r"`(.*?)`",'¤',js, flags=re.DOTALL)
+    for i in range(10, 1, -1):js = js.replace(" "*i,"")
+    js=js.replace("\n", ";").replace("(;", "(").replace(";)", ")").replace("{;", "{").replace(",;", ",").replace(",;", ",").replace("};else", "} else").replace("];,","],")
+    return js.replace("¤",f"`{xStr.replace("\n","")}`").replace('"','~')
 
 def editOpenGUI(popup,run,label,index):
 
@@ -111,11 +116,10 @@ def editOpenGUI(popup,run,label,index):
         finalJSON = {
             "name":scriptName.get(),
             "url":urlStr.get(),
-            "code":codeStr.get().replace(";","").replace('\n',";").replace('"','`')+"document",
+            "code":convertJS(codeStr.get()),
             "repeat":repeat.get()
         }
         run(finalJSON,[scriptName.get(),urlStr.get(),codeStr.get(),repeat.get()])
-        print(finalJSON)
     
     Label(popup,text='Script Name').pack()
     e1 = Entry(popup,textvariable=scriptName);e1.pack()
@@ -138,7 +142,7 @@ def editOpenGUI(popup,run,label,index):
     if(index!=None):
         e1.insert(END,scripts[index]["name"])
         e2.insert(END,scripts[index]["url"])
-        code.insert(END,scripts[index]["code"].replace(";document","").replace(';',"\n").replace('`','"'))
+        code.insert(END,scripts[index]["code"].replace(';',"\n").replace('~','"'))
         if(scripts[index]["repeat"]):e3.toggle()
 
 def newScriptWindow():
@@ -154,7 +158,6 @@ def newScriptWindow():
         for i in range(len(scripts)):
             if(scripts[i]["name"]==values[0]):checkName=1
         if(checkName==0):
-            print(finalJSON)
             if isinstance(scripts, list):scripts.append(finalJSON)
             else:scripts = [scripts, finalJSON]
             json.dump(scripts, open(saveFilePath, 'w'), indent=4)
@@ -177,8 +180,9 @@ def editScriptWindow(index):
             if(i!=index):
                 if(scripts[i]["name"]==values[0]):checkName=1
         if(checkName==0):
-            json.dump(finalJSON,open(saveFilePath,"w"),indent=4)
-            refresh()
+            scripts[index]=finalJSON
+            json.dump(scripts,open(saveFilePath,"w"),indent=4)
+            popup.destroy()
         else:messagebox.showwarning(title="Error",message="Name Allready In Use ")
 
 def deleteScript(index):
@@ -192,27 +196,6 @@ def showCMD():
     else:win32gui.ShowWindow(program, win32con.SW_SHOW)
     toggleCMD^=True
 
-    
-
-
-#Main Window
-
-
-ttk.Label(frm,text="Userscripts:").grid(sticky=W,column=0, row=0,pady=(0,25))
-ttk.Button(frm, text="NEW SCRIPT", command=newScriptWindow).grid(column=1,row=0,pady=(0,25))
-ttk.Button(frm, text="CMD", command=showCMD).grid(column=2,row=0,pady=(0,25))
-
-
-
-alphabet = ["a","b","c"]
-
-
-for i in range(len(scripts)):
-    ttk.Label(frm, anchor="w", text=scripts[i]["name"]).grid(sticky=W,column=0,row=1+i,padx=(0,30))
-    ttk.Button(frm, text="Edit", command=partial(editScriptWindow,i)).grid(column=1,row=1+i)
-    ttk.Button(frm, text="Delete", command=partial(deleteScript,i)).grid(column=2,row=1+i)
-
-
 async def main(tabs_id, tab_script,repeating):
     tasks = [inject(tab_id, tab_script,repeating) for tab_id in tabs_id]
     await asyncio.gather(*tasks)
@@ -225,10 +208,10 @@ def Scan():
         global tabsIDHistory
 
         #Update Data
-        data = json.loads(requests.get(f"http://127.0.0.1:{port}/json",verify=False).text)
+        with requests.Session() as s:
+            data=json.loads(s.get(f"http://127.0.0.1:{port}/json",verify=False).text)
         if(os.path.exists(saveFilePath)):
             scripts=json.load(open(saveFilePath, 'r'))
-
         #Injector
         for i in range(len(scripts)):
             if(run==True):
@@ -239,12 +222,33 @@ def Scan():
                 asyncio.run(main(tabsID,tabScript,scripts[i]["repeat"]))
 
 
-function = threading.Thread(target=Scan)
-function.start()
+
+buffer=10
+for i in range(buffer):
+    function = threading.Thread(target=Scan)
+    function.start()
+
+
+
+#Main Window
+
+
+ttk.Label(frm,text="Userscripts:").grid(sticky=W,column=0, row=0,pady=(0,25))
+ttk.Button(frm, text="NEW SCRIPT", command=newScriptWindow).grid(column=1,row=0,pady=(0,25))
+ttk.Button(frm, text="CMD", command=showCMD).grid(column=2,row=0,pady=(0,25))
+
+
+
+for i in range(len(scripts)):
+    ttk.Label(frm, anchor="w", text=scripts[i]["name"]).grid(sticky=W,column=0,row=1+i,padx=(0,30))
+    ttk.Button(frm, text="Edit", command=partial(editScriptWindow,i)).grid(column=1,row=1+i)
+    ttk.Button(frm, text="Delete", command=partial(deleteScript,i)).grid(column=2,row=1+i)
+
+
 
 
 root.mainloop()
 run=False   
 
-if(refreshing):
-    subprocess.Popen(['start', 'cmd', '/k', 'python', __file__], shell=True)
+if(refreshing):subprocess.Popen(['start', 'cmd', '/k', 'python', __file__], shell=True)
+exit()
